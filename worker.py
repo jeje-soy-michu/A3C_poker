@@ -1,11 +1,11 @@
 import os
 import threading
 import numpy as np
-from time import time
 import tensorflow as tf
 
 from model import Model
 from memory import Memory
+from metrics import Metrics
 from player import A3CPlayer
 from pypokerengine.api.emulator import Emulator
 
@@ -13,8 +13,8 @@ PLAYERS = 6
 STACK = 200
 SMALL_BLIND = 1
 ANTE = 0
-GAMES = 25
-MAX_ROUND = 1000
+GAMES = 10
+MAX_ROUND = 50
 
 class Worker(threading.Thread):
 
@@ -31,6 +31,7 @@ class Worker(threading.Thread):
         self.debug = debug
         self.save_dir = save_dir
         self.gamma = gamma
+        self.metrics = Metrics()
 
     def _print(self, msg, verbosity=3):
         if self.debug >= verbosity :
@@ -77,9 +78,9 @@ class Worker(threading.Thread):
 
     def run(self):
         # Metrics
-        playing_times = []
-        epoch_times = []
-
+        self.metrics.register("playing")
+        self.metrics.register("total")
+        self.metrics.register("round_playing")
         for game in range(GAMES):
             if game % (GAMES//4) == 0:
                 self._print(f"Playing Game: {game+1}", 1)
@@ -87,13 +88,12 @@ class Worker(threading.Thread):
                 self._print(f"Playing Game: {game+1}", 2)
             state = self.reset_env()
             total_loss = 0
-            start_time = time()
-            playing_time = 0
+            self.metrics.start('total')
 
             for hand in range(MAX_ROUND):
-                st_playing = time()
+                self.metrics.start('playing')
                 state, events = self.emul.run_until_round_finish(state)
-                playing_time += time() - st_playing
+                self.metrics.stop('playing')
                 self._print(f"Playing hand: {hand+1}")
                 event = self.last_event(events)
                 if not self.everyone_folds(event):
@@ -118,17 +118,16 @@ class Worker(threading.Thread):
                 self._print(f"Saving model to {self.save_dir}", 3)
                 self.global_model.save_weights(
                     os.path.join(self.save_dir, 'A3C_Model.h5'))
+
             # Metrics
-            end_time = time() - start_time
-            epoch_times.append(end_time)
-            playing_times.append(playing_time)
-            self._print("Epoch stats:", 2)
-            self._print(f"Time playing: {playing_time:.2f}", 2)
-            self._print(f"Total Time: {end_time:.2f}", 2)
+            self.metrics.store('round_playing', sum(self.metrics.get('playing')))
+            self.metrics.reset('playing')
+            self.metrics.stop('total')
+
         # Metrics
         self._print("TRAIN STATS:", 1)
-        self._print(f"AVG time Playing: {np.mean(playing_times):.2f}", 1)
-        self._print(f"AVG time per epoch: {np.mean(epoch_times):.2f}", 1)
+        self._print(f"AVG time Playing: {np.mean(self.metrics.get('round_playing')):.2f}", 1)
+        self._print(f"AVG time per epoch: {np.mean(self.metrics.get('total')):.2f}", 1)
         self._print("Training finished.", 1)
 
     def compute_loss(self, event):
